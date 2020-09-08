@@ -232,6 +232,7 @@ type ethtoolPermAddr struct {
 
 type Ethtool struct {
 	fd int
+	stat_names map[string][]string
 }
 
 // DriverName returns the driver name of the given interface name.
@@ -576,8 +577,8 @@ func (e *Ethtool) LinkState(intf string) (uint32, error) {
 	return x.data, nil
 }
 
-// Stats retrieves stats of the given interface name.
-func (e *Ethtool) Stats(intf string) (map[string]uint64, error) {
+// StatNames retrieves names of the available stats of the given interface name.
+func (e *Ethtool) StatNames(intf string) ([]string, error) {
 	drvinfo := ethtoolDrvInfo{
 		cmd: ETHTOOL_GDRVINFO,
 	}
@@ -601,9 +602,45 @@ func (e *Ethtool) Stats(intf string) (map[string]uint64, error) {
 		return nil, err
 	}
 
+	var result = make([]string, drvinfo.n_stats)
+	for i := 0; i != int(drvinfo.n_stats); i++ {
+		b := gstrings.data[i*ETH_GSTRING_LEN : i*ETH_GSTRING_LEN+ETH_GSTRING_LEN]
+		strEnd := strings.Index(string(b), "\x00")
+		if strEnd == -1 {
+			strEnd = ETH_GSTRING_LEN
+		}
+		result[i] = string(b[:strEnd])
+	}
+
+	return result, nil
+}
+
+func (e *Ethtool) StatNamesCached(intf string) ([]string, error) {
+	if result, ok := e.stat_names[intf]; ok {
+		return result, nil
+	}
+
+	if result, err := e.StatNames(intf); err != nil {
+		return nil, err
+	} else {
+		e.stat_names[intf] = result
+		return result, nil
+	}
+}
+
+// Stats retrieves stats of the given interface name.
+func (e *Ethtool) Stats(intf string) (map[string]uint64, error) {
+	stat_names, err := e.StatNamesCached(intf);
+
+	if err != nil {
+		return nil, err
+	}
+
+	n_stats := len(stat_names)
+
 	stats := ethtoolStats{
 		cmd:     ETHTOOL_GSTATS,
-		n_stats: drvinfo.n_stats,
+		n_stats: uint32(n_stats),
 		data:    [MAX_GSTRINGS]uint64{},
 	}
 
@@ -612,13 +649,8 @@ func (e *Ethtool) Stats(intf string) (map[string]uint64, error) {
 	}
 
 	var result = make(map[string]uint64)
-	for i := 0; i != int(drvinfo.n_stats); i++ {
-		b := gstrings.data[i*ETH_GSTRING_LEN : i*ETH_GSTRING_LEN+ETH_GSTRING_LEN]
-		strEnd := strings.Index(string(b), "\x00")
-		if strEnd == -1 {
-			strEnd = ETH_GSTRING_LEN
-		}
-		key := string(b[:strEnd])
+	for i := 0; i != n_stats; i++ {
+		key := stat_names[i]
 		if len(key) != 0 {
 			result[key] = stats.data[i]
 		}
@@ -641,6 +673,7 @@ func NewEthtool() (*Ethtool, error) {
 
 	return &Ethtool{
 		fd: int(fd),
+		stat_names: map[string][]string{},
 	}, nil
 }
 
